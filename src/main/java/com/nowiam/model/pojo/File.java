@@ -17,8 +17,8 @@ public class File {
     private long fileSize;
     @TableField("total_chunks")
     private int totalChunks;
-    @TableField("status")
-    private int status;
+    @TableField("file_status")
+    private int fileStatus;
     @TableField("user_id")
     private int userId;
     @TableField("create_time")
@@ -58,12 +58,12 @@ public class File {
         this.totalChunks = totalChunks;
     }
 
-    public int isStatus() {
-        return status;
+    public int getFileStatus() {
+        return fileStatus;
     }
 
-    public void setStatus(int status) {
-        this.status = status;
+    public void setFileStatus(int fileStatus) {
+        this.fileStatus = fileStatus;
     }
 
     public int getUserId() {

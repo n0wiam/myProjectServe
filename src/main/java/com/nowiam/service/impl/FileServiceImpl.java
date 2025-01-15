@@ -7,6 +7,7 @@ import com.nowiam.mapper.FileMapper;
 import com.nowiam.mapper.UserMapper;
 import com.nowiam.model.dto.FileDto;
 import com.nowiam.model.pojo.User;
+import com.nowiam.model.task.MergeTask;
 import com.nowiam.model.vo.Result;
 import com.nowiam.service.FileService;
 import com.nowiam.utils.MyFileWriter;
@@ -19,6 +20,7 @@ import java.io.File;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Date;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 @Service
@@ -35,6 +37,8 @@ public class FileServiceImpl implements FileService {
     UserMapper userMapper;
     @Autowired
     FileMapper fileMapper;
+    @Autowired
+    ThreadPoolExecutor threadPoolExecutor;
     @Override
     public void upload(FileDto fileDto)throws Exception {
         //TODO 获取用户信息
@@ -42,7 +46,12 @@ public class FileServiceImpl implements FileService {
         //查询文件id是否合法
         String json = stringRedisTemplate.opsForValue().get("Fid:" + fileDto.getFileId());
         Integer master=gson.fromJson(json, Integer.class);
-
+        //查看文件是否正在合并,不然删除时会多上传一份   可以改为合并时解决（去掉上面id）
+        String isMerge = stringRedisTemplate.opsForValue().get("MergeLock:" + fileDto.getFileId());
+        if(isMerge!=null) return;
+        //查看文件是否上传完成
+        com.nowiam.model.pojo.File file_check=fileMapper.selectById(fileDto.getFileId());
+        if(file_check.getFileStatus()!=0) return;
         if(!userId.equals(master))
         {
             System.out.println("上传文件fid异常:"+master);
@@ -92,7 +101,7 @@ public class FileServiceImpl implements FileService {
             file.setFid(fid);
             file.setFileName(fileName);
             file.setFileSize(fileSize);
-            file.setStatus(0);
+            file.setFileStatus(0);
             file.setUserId(userId);
             file.setTotalChunks(totalChunks);
             file.setCreateTime(new Date());
@@ -102,6 +111,7 @@ public class FileServiceImpl implements FileService {
         }catch (Exception e)
         {
             System.out.println("获取Fid失败");
+            System.out.println(e);
         }
         return new Result<>().error(400,"获取Fid失败");
     }
@@ -111,42 +121,15 @@ public class FileServiceImpl implements FileService {
         //查询分片是否齐全（网络拥塞），但前端是同步的所以可不必
         //TODO 获取user
         Integer userId=1;
-
-        File source=new File(myConfig.tmp_path+myConfig.separator+
-                userId+myConfig.separator+
-                fid);
-        if(!source.exists())
+        Boolean sign=stringRedisTemplate.opsForValue().setIfAbsent("MergeLock:"+fid,"",5,TimeUnit.MINUTES);
+        if(sign!=true)
         {
-            System.out.println("合并文件异常：文件夹不存在");
+            System.out.println("合并正在进行");
+            //合并正在进行
             return;
         }
-        File targetDir=new File(myConfig.file_path+myConfig.separator+userId);
-        if(!targetDir.exists()) targetDir.mkdir();
-        //获取原文件名
-        com.nowiam.model.pojo.File file=fileMapper.selectById(fid);
-        File target=new File(targetDir.getPath()+myConfig.separator+file.getFileName());
-        if(target.exists()){
-            System.out.println("合并文件异常：文件已存在");
-            return;
-        }
-        target.createNewFile();
-        //将tmp中的文件合并到data中
-        int totalChunks = file.getTotalChunks();
-        try{
-            for(int i=0;i<totalChunks;i++)
-            {
-                File chunk=new File(source.getPath()+myConfig.separator+i);
-                myFileWriter.write(chunk,target);
-                chunk.delete();
-            }
-            source.delete();
-        }catch (Exception e){
-            System.out.println("合并文件异常：合并异常");
-        }
-        file.setStatus(1);
-        fileMapper.updateById(file);
-        //文件状态变为1
-        //线程池优化
+        //
+        threadPoolExecutor.execute(new MergeTask(myConfig,userId,fid,fileMapper,myFileWriter));
     }
 
     private String mesId(){
